@@ -1,0 +1,69 @@
+#!/bin/bash -e
+
+OLD_PWD=${PWD}
+source /lib/gentoo/functions.sh || true
+
+if [ -z "$1" ]; then
+        echo "usage: $0 /usr/portage/packages/dev-java/icedtea-X.X.X.X.tbz2 [-rX]"
+        exit 1
+fi
+
+TBZ2=$(realpath -e "$1")
+
+ebegin "Reading package environment"
+eval "$(qtbz2 -O -x "${TBZ2}" | qxpak -O -x /dev/stdin environment.bz2 | bunzip2)"
+eend $?
+
+ebegin "Creating temporary directory"
+TMP=$(mktemp --tmpdir -d icedtea.XXXXXXXXXX)
+trap 'rm -rf "${TMP}"' EXIT
+cd "${TMP}"
+eend $?
+
+ebegin "Extracting package files"
+qtbz2 -O -t "${TBZ2}" | tar jx
+eend $?
+
+BIN_PN=${PN}-bin
+BIN_P=${BIN_PN}-${PV}
+
+LIB=usr/$(get_libdir)/${PN}${SLOT}
+DOC=usr/share/doc/${PF}
+
+ebegin "Decompressing documentation"
+bunzip2 "${DOC}"/*.bz2
+eend $?
+
+case "${CHOST%%-*}" in
+        powerpc*le) abi=${ABI}le ;;
+        *) abi=${ABI} ;;
+esac
+
+use() {
+        local re="\b${1}\b"
+        [[ ${USE} =~ ${re} ]]
+}
+
+do_tar() {
+        local DIR=${BIN_P}
+        [[ $1 = *-${abi} ]] && DIR+=-${ABI}
+
+        TARBALL=${BIN_PN}-$1.tar.xz
+        shift
+
+        ebegin "Creating ${TARBALL}"
+
+        tar Jcf "${OLD_PWD}/${TARBALL}" \
+                --owner=root --group=root \
+                --transform="s:^${LIB}:${DIR}:x" \
+                --transform="s:^${DOC}:${DIR}/doc:x" \
+                --remove-files \
+                "${@}"
+
+        eend $?
+}
+
+use doc && do_tar "doc-${PV}${2}" "${DOC}/html"
+use source && do_tar "src-${PV}${2}" "${LIB}/src.zip"
+use examples && do_tar "examples-${PV}${2}-${abi}" "${LIB}/demo" "${LIB}/sample"
+do_tar "core-${PV}${2}-${abi}" "${LIB}" "${DOC}"
