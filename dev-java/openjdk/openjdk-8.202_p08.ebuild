@@ -24,14 +24,13 @@ SRC_URI="
 
 LICENSE="GPL-2"
 SLOT="$(ver_cut 1)"
-KEYWORDS="~amd64 ~arm ~arm64 ~ppc64"
-IUSE="alsa debug doc examples gentoo-vm headless-awt +jbootstrap nsplugin +pch selinux source +webstart"
+KEYWORDS="~amd64 ~arm64 ~ppc64 ~x86"
+IUSE="alsa debug cups doc examples gentoo-vm headless-awt +jbootstrap nsplugin +pch selinux source +webstart"
 
 CDEPEND="
-	dev-util/systemtap
 	media-libs/freetype:2=
-	net-print/cups
 	sys-libs/zlib
+	alsa? ( media-libs/alsa-lib )
 	!headless-awt? (
 		media-libs/giflib:0/7
 		x11-libs/libX11
@@ -45,12 +44,14 @@ CDEPEND="
 
 RDEPEND="
 	${CDEPEND}
-	alsa? ( media-libs/alsa-lib )
+	cups? ( net-print/cups )
 	selinux? ( sec-policy/selinux-java )
 "
 
+# cups headers requied to build, runtime dep is optional
 DEPEND="
 	${CDEPEND}
+	net-print/cups
 	app-arch/zip
 	app-misc/ca-certificates
 	dev-lang/perl
@@ -60,9 +61,8 @@ DEPEND="
 		x11-base/xorg-proto
 	)
 	|| (
-		dev-java/openjdk-bin:${SLOT}
-		dev-java/openjdk:${SLOT}
 		dev-java/icedtea-bin:${SLOT}
+		dev-java/openjdk:${SLOT}
 		dev-java/icedtea:${SLOT}
 	)
 "
@@ -70,19 +70,17 @@ DEPEND="
 PDEPEND="webstart? ( >=dev-java/icedtea-web-1.6.1:0 )
 	nsplugin? ( >=dev-java/icedtea-web-1.6.1:0[nsplugin] )"
 
-RESTRICT="ccache distcc"
-
 S="${WORKDIR}/jdk${SLOT}u-jdk${MY_PV}"
 
 # The space required to build varies wildly depending on USE flags,
-# ranging from 2GB to 24GB. This function is certainly not exact but
+# ranging from 2GB to 16GB. This function is certainly not exact but
 # should be close enough to be useful.
 openjdk_check_requirements() {
 	local M
-	M=$(usex debug 2600 875)
-	M=$(( $(usex debug 2900 375) + $M ))
+	M=2048
+	M=$(( $(usex debug 3 1) * $M ))
 	M=$(( $(usex jbootstrap 2 1) * $M ))
-	M=$(( $(usex doc 300 0) + $(usex source 120 0) + 820 + $M ))
+	M=$(( $(usex doc 320 0) + $(usex source 128 0) + 192 + $M ))
 
 	CHECKREQS_DISK_BUILD=${M}M check-reqs_pkg_${EBUILD_PHASE}
 }
@@ -95,7 +93,7 @@ pkg_setup() {
 	openjdk_check_requirements
 	java-vm-2_pkg_setup
 
-	JAVA_PKG_WANT_BUILD_VM="openjdk-${SLOT} openjdk-bin-${SLOT} icedtea-${SLOT} icedtea-bin-${SLOT}"
+	JAVA_PKG_WANT_BUILD_VM="openjdk-${SLOT} icedtea-${SLOT} icedtea-bin-${SLOT}"
 	JAVA_PKG_WANT_SOURCE="${SLOT}"
 	JAVA_PKG_WANT_TARGET="${SLOT}"
 
@@ -128,6 +126,7 @@ pkg_setup() {
 
 src_prepare() {
 	default
+	chmod +x configure || die
 	local repo
 	for repo in corba hotspot jdk jaxp jaxws langtools nashorn; do
 		ln -s ../"${repo}-jdk${MY_PV}" "${repo}" || die
@@ -135,12 +134,13 @@ src_prepare() {
 }
 
 src_configure() {
+	# general build info found here:
+	#https://hg.openjdk.java.net/jdk8/jdk8/raw-file/tip/README-builds.html
+
 	# Work around stack alignment issue, bug #647954.
 	use x86 && append-flags -mincoming-stack-boundary=2
 
 	append-flags -Wno-error
-
-	chmod +x configure || die
 
 	local myconf=(
 			--disable-ccache
@@ -151,14 +151,14 @@ src_configure() {
 			--with-extra-ldflags="${LDFLAGS}"
 			--with-giflib=system
 			--with-jtreg=no
-			--with-jobs=$(makeopts_jobs)
-			--with-num-cores=$(makeopts_jobs)
+			--with-jobs=1
+			--with-num-cores=1
 			--with-update-version="$(ver_cut 2)"
-			--with-build-number="$(ver_cut 3-4)"
+			--with-build-number="$(ver_cut 4)"
 			--with-milestone="gentoo"
 			--with-zlib=system
 			--with-native-debug-symbols=$(usex debug internal none)
-			$(usex headless-awt --disable-headful --with-x)
+			$(usex headless-awt --disable-headful '')
 		)
 
 	# PaX breaks pch, bug #601016
@@ -167,9 +167,6 @@ src_configure() {
 	else
 		myconf+=( --disable-precompiled-headers )
 	fi
-
-	# 32 bit arches can't use server variant
-	use arm && myconf+=( --with-jvm-variants=client )
 
 	(
 		unset JAVA JAVAC XARGS
@@ -180,8 +177,8 @@ src_configure() {
 }
 
 src_compile() {
-	emake -j1 \
-		$(usex jbootstrap bootcycle-images images) $(usex doc docs '') LOG=debug
+	emake -j1 LOG=debug JOBS=$(makeopts_jobs)\
+		$(usex jbootstrap bootcycle-images images) $(usex doc docs '')
 }
 
 src_install() {
@@ -191,7 +188,7 @@ src_install() {
 	cd "${S}"/build/*-release/images/j2sdk-image || die
 
 	if ! use alsa; then
-		rm -v "${ddest}"/jre/lib/$(get_system_arch)/libjsoundalsa.* || die
+		rm -v jre/lib/$(get_system_arch)/libjsoundalsa.* || die
 	fi
 
 	if ! use examples ; then
@@ -222,8 +219,7 @@ src_install() {
 
 	if use doc ; then
 		insinto /usr/share/doc/${PF}/html
-		doins -r "${S}"/build/*-release/images/docs/*
-		dosym ${PF} /usr/share/doc/${PN}-${SLOT}
+		doins -r "${S}"/build/*-release/docs/*
 	fi
 }
 
